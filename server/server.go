@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bufio"
 	"fmt"
 	"log"
 	"net"
@@ -52,16 +53,10 @@ func (s *Server) handleConn(conn net.Conn) {
 		log.Printf("connection closed: %s\n", conn.RemoteAddr())
 	}()
 
-	buf := make([]byte, 2048)
-	for {
-		n, err := conn.Read(buf)
-		if err != nil {
-			log.Printf("read error %s\n", err)
-			break
-		}
-
-		cmd := buf[:n]
-		s.parseCommand(conn, cmd)
+	scanner := bufio.NewScanner(conn)
+	scanner.Split(bufio.ScanLines)
+	for scanner.Scan() {
+		s.parseCommand(conn, scanner.Bytes())
 	}
 }
 
