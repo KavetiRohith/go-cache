@@ -102,6 +102,7 @@ func (s *Server) handleSet(conn net.Conn, key string, val string) {
 	err := s.cache.Set(key, val)
 	if err != nil {
 		conn.Write([]byte(err.Error()))
+		return
 	}
 
 	conn.Write([]byte("Success\n"))
@@ -112,10 +113,12 @@ func (s *Server) handleSetWithTTL(conn net.Conn, key string, val string, ttl str
 	parsedTTL, err := strconv.Atoi(ttl)
 	if err != nil {
 		conn.Write([]byte("Invalid TTl\n"))
+		return
 	}
 	err = s.cache.SetWithTTL(key, val, time.Duration(parsedTTL)*time.Second)
 	if err != nil {
 		conn.Write([]byte(err.Error()))
+		return
 	}
 
 	conn.Write([]byte("Success\n"))
@@ -125,7 +128,7 @@ func (s *Server) handleSetWithTTL(conn net.Conn, key string, val string, ttl str
 func (s *Server) handleGet(conn net.Conn, key string) {
 	val, err := s.cache.Get(key)
 	if err != nil {
-		conn.Write([]byte(""))
+		conn.Write([]byte(err.Error()))
 		return
 	}
 
@@ -137,6 +140,7 @@ func (s *Server) handleDel(conn net.Conn, key string) {
 	err := s.cache.Delete(key)
 	if err != nil {
 		conn.Write([]byte(err.Error()))
+		return
 	}
 
 	conn.Write([]byte("Success\n"))
