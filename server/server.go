@@ -119,7 +119,7 @@ func (s *Server) handleSetWithTTL(conn net.Conn, key string, val string, ttl str
 	}
 
 	conn.Write([]byte("Success\n"))
-	log.Printf("SET %s %s\n", key, val)
+	log.Printf("SET %s %s exp: %v seconds\n", key, val, parsedTTL)
 }
 
 func (s *Server) handleGet(conn net.Conn, key string) {

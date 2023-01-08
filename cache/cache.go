@@ -2,6 +2,7 @@ package cache
 
 import (
 	"fmt"
+	"log"
 	"sync"
 	"time"
 )
@@ -59,6 +60,7 @@ func (c *Cache) SetWithTTL(key, val string, ttl time.Duration) error {
 		defer c.mu.Unlock()
 
 		delete(c.data, key)
+		log.Printf("key %s with val %s expired\n", key, val)
 	}(c, key, ttl)
 
 	c.data[key] = val
