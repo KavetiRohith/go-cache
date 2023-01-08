@@ -17,5 +17,5 @@ func main() {
 	}
 
 	server := server.NewServer(opts, cache.New())
-	server.Start()
+	log.Fatal(server.Start())
 }
