@@ -101,7 +101,7 @@ func (s *Server) parseCommand(conn net.Conn, rawCmd []byte) {
 func (s *Server) handleSet(conn net.Conn, key string, val string) {
 	err := s.cache.Set(key, val)
 	if err != nil {
-		conn.Write([]byte(err.Error()))
+		conn.Write([]byte(err.Error() + "\n"))
 		return
 	}
 
@@ -117,7 +117,7 @@ func (s *Server) handleSetWithTTL(conn net.Conn, key string, val string, ttl str
 	}
 	err = s.cache.SetWithTTL(key, val, time.Duration(parsedTTL)*time.Second)
 	if err != nil {
-		conn.Write([]byte(err.Error()))
+		conn.Write([]byte(err.Error() + "\n"))
 		return
 	}
 
@@ -128,7 +128,7 @@ func (s *Server) handleSetWithTTL(conn net.Conn, key string, val string, ttl str
 func (s *Server) handleGet(conn net.Conn, key string) {
 	val, err := s.cache.Get(key)
 	if err != nil {
-		conn.Write([]byte(err.Error()))
+		conn.Write([]byte(err.Error() + "\n"))
 		return
 	}
 
@@ -139,7 +139,7 @@ func (s *Server) handleGet(conn net.Conn, key string) {
 func (s *Server) handleDel(conn net.Conn, key string) {
 	err := s.cache.Delete(key)
 	if err != nil {
-		conn.Write([]byte(err.Error()))
+		conn.Write([]byte(err.Error() + "\n"))
 		return
 	}
 
