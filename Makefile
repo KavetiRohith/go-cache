@@ -1,8 +1,8 @@
 build:
-	go build -o bin/cache
+	@go build -o bin/cache
 
 run: build
-	./bin/cache
+	@./bin/cache
 
 clean:
-	rm -rf bin/
+	@rm -rf bin/
