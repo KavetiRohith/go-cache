@@ -12,6 +12,7 @@ var listenAddr = flag.String("addr", ":3000", "Set the TCP bind address")
 
 func main() {
 	log.SetFlags(log.Ldate | log.Ltime | log.Llongfile)
+	flag.Parse()
 	opts := server.ServerOpts{
 		ListenAddr: *listenAddr,
 	}
