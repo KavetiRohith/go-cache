@@ -8,13 +8,14 @@ import (
 	"github.com/KavetiRohith/go-cache/server"
 )
 
-var listenAddr = flag.String("addr", ":3000", "Set the TCP bind address")
+var host = flag.String("host", "127.0.0.1", "Set the host")
+var port = flag.Int("port", 3000, "Set the port")
 
 func main() {
 	log.SetFlags(log.Ldate | log.Ltime | log.Llongfile)
 	flag.Parse()
 	opts := server.ServerOpts{
-		ListenAddr: *listenAddr,
+		Host: *host, Port: *port,
 	}
 
 	server := server.NewServer(opts, cache.New())

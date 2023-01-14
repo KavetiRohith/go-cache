@@ -2,6 +2,7 @@ package server
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -10,15 +11,18 @@ import (
 	"time"
 
 	"github.com/KavetiRohith/go-cache/cache"
+	syscall "golang.org/x/sys/unix"
 )
 
 type ServerOpts struct {
-	ListenAddr string
+	Host string
+	Port int
 }
 
 type Server struct {
 	ServerOpts
-	cache *cache.Cache
+	cache       *cache.Cache
+	con_clients uint
 }
 
 func NewServer(opts ServerOpts, c *cache.Cache) *Server {
@@ -29,46 +33,125 @@ func NewServer(opts ServerOpts, c *cache.Cache) *Server {
 }
 
 func (s *Server) Start() error {
-	ln, err := net.Listen("tcp", s.ListenAddr)
+	log.Println("starting an asynchronous TCP server on", s.Host, s.Port)
+
+	max_clients := 20000
+
+	// Create EPOLL Event Objects to hold events
+	events := make([]syscall.EpollEvent, max_clients)
+
+	// Create a socket
+	serverFD, err := syscall.Socket(syscall.AF_INET, syscall.O_NONBLOCK|syscall.SOCK_STREAM, 0)
 	if err != nil {
-		return fmt.Errorf("listener error: %s", err)
+		return err
+	}
+	defer syscall.Close(serverFD)
+
+	// Set the Socket operate in a non-blocking mode
+	if err = syscall.SetNonblock(serverFD, true); err != nil {
+		return err
 	}
 
-	log.Printf("server starting on [%s]\n", s.ListenAddr)
+	// Bind the IP and the port
+	ip4 := net.ParseIP(s.Host)
+	if err = syscall.Bind(serverFD, &syscall.SockaddrInet4{
+		Port: s.Port,
+		Addr: [4]byte{ip4[0], ip4[1], ip4[2], ip4[3]},
+	}); err != nil {
+		return err
+	}
+
+	// Start listening
+	if err = syscall.Listen(serverFD, max_clients); err != nil {
+		return err
+	}
+
+	// AsyncIO starts here!!
+
+	// creating EPOLL instance
+	epollFD, err := syscall.EpollCreate1(0)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer syscall.Close(epollFD)
+
+	// Specify the events we want to get hints about
+	// and set the socket on which
+	socketServerEvent := syscall.EpollEvent{
+		Events: syscall.EPOLLIN,
+		Fd:     int32(serverFD),
+	}
+
+	// Listen to read events on the Server itself
+	if err = syscall.EpollCtl(epollFD, syscall.EPOLL_CTL_ADD, serverFD, &socketServerEvent); err != nil {
+		return err
+	}
 
 	for {
-		conn, err := ln.Accept()
-		if err != nil {
-			log.Printf("accept error %s\n", err)
+		// see if any FD is ready for an IO
+		nevents, e := syscall.EpollWait(epollFD, events, -1)
+		if e != nil {
 			continue
 		}
 
-		go s.handleConn(conn)
+		for i := 0; i < nevents; i++ {
+			// if the socket server itself is ready for an IO
+			if int(events[i].Fd) == serverFD {
+				// accept the incoming connection from a client
+				fd, _, err := syscall.Accept(serverFD)
+				if err != nil {
+					log.Println("err", err)
+					continue
+				}
+
+				// increase the number of concurrent clients count
+				s.con_clients++
+				syscall.SetNonblock(fd, true)
+
+				// add this new TCP connection to be monitored
+				socketClientEvent := syscall.EpollEvent{
+					Events: syscall.EPOLLIN,
+					Fd:     int32(fd),
+				}
+				if err := syscall.EpollCtl(epollFD, syscall.EPOLL_CTL_ADD, fd, &socketClientEvent); err != nil {
+					log.Fatal(err)
+				}
+			} else {
+				conn := fDconn{Fd: int(events[i].Fd)}
+
+				r := bufio.NewReader(conn)
+				cmd, err := r.ReadBytes('\n')
+
+				if err != nil {
+					conn.Close()
+					s.con_clients--
+					continue
+				}
+
+				resp, err := s.handlecommand(cmd)
+				if err != nil {
+					resp = []byte(err.Error())
+				}
+
+				_, err = conn.Write(append(resp, '\n'))
+				if err != nil {
+					conn.Close()
+					s.con_clients--
+					continue
+				}
+			}
+		}
 	}
 }
 
-func (s *Server) handleConn(conn net.Conn) {
-	defer func() {
-		conn.Close()
-		log.Printf("connection closed: %s\n", conn.RemoteAddr())
-	}()
-
-	scanner := bufio.NewScanner(conn)
-	scanner.Split(bufio.ScanLines)
-	for scanner.Scan() {
-		s.parseCommand(conn, scanner.Bytes())
-	}
-}
-
-func (s *Server) parseCommand(conn net.Conn, rawCmd []byte) {
+func (s *Server) handlecommand(rawCmd []byte) ([]byte, error) {
 	var (
 		parts   = strings.Fields(string(rawCmd))
 		len_cmd = len(parts)
 	)
 
 	if len_cmd < 2 {
-		conn.Write([]byte("message must atleast have command and key\n"))
-		return
+		return nil, errors.New("message must atleast have command and key")
 	}
 
 	var (
@@ -81,78 +164,75 @@ func (s *Server) parseCommand(conn net.Conn, rawCmd []byte) {
 		switch len_cmd {
 		case 3:
 			val := parts[2]
-			s.handleSet(conn, key, val)
+			return s.handleSet(key, val)
 		case 4:
 			val := parts[2]
 			ttl := parts[3]
-			s.handleSetWithTTL(conn, key, val, ttl)
+			return s.handleSetWithTTL(key, val, ttl)
 		default:
-			conn.Write([]byte("SET message must atleast have key and value\n"))
+			return nil, errors.New("SET message must atleast have key and value")
 		}
 	case "GET":
-		s.handleGet(conn, key)
+		return s.handleGet(key)
 	case "DEL":
-		s.handleDel(conn, key)
+		return s.handleDel(key)
 	case "HAS":
-		s.handleHas(conn, key)
+		return s.handleHas(key)
+	default:
+		return nil, fmt.Errorf("unknown Command %s", cmd)
 	}
 }
 
-func (s *Server) handleSet(conn net.Conn, key string, val string) {
+func (s *Server) handleSet(key string, val string) ([]byte, error) {
 	err := s.cache.Set(key, val)
 	if err != nil {
-		conn.Write([]byte(err.Error() + "\n"))
-		return
+		return nil, err
 	}
 
-	conn.Write([]byte("Success\n"))
 	log.Printf("SET %s %s\n", key, val)
+	return []byte("Success"), nil
 }
 
-func (s *Server) handleSetWithTTL(conn net.Conn, key string, val string, ttl string) {
+func (s *Server) handleSetWithTTL(key string, val string, ttl string) ([]byte, error) {
 	parsedTTL, err := strconv.Atoi(ttl)
 	if err != nil {
-		conn.Write([]byte("Invalid TTl\n"))
-		return
+		return nil, errors.New("invalid TTl")
 	}
 	err = s.cache.SetWithTTL(key, val, time.Duration(parsedTTL)*time.Second)
 	if err != nil {
-		conn.Write([]byte(err.Error() + "\n"))
-		return
+		return nil, err
 	}
 
-	conn.Write([]byte("Success\n"))
 	log.Printf("SET %s %s exp: %v seconds\n", key, val, parsedTTL)
+	return []byte("Success"), nil
 }
 
-func (s *Server) handleGet(conn net.Conn, key string) {
+func (s *Server) handleGet(key string) ([]byte, error) {
 	val, err := s.cache.Get(key)
 	if err != nil {
-		conn.Write([]byte(err.Error() + "\n"))
-		return
+		return nil, err
 	}
 
-	conn.Write([]byte(fmt.Sprintf("%s\n", val)))
 	log.Printf("GET %s %s\n", key, val)
+	return []byte(val), nil
 }
 
-func (s *Server) handleDel(conn net.Conn, key string) {
+func (s *Server) handleDel(key string) ([]byte, error) {
 	err := s.cache.Delete(key)
 	if err != nil {
-		conn.Write([]byte(err.Error() + "\n"))
-		return
+		return nil, err
 	}
 
-	conn.Write([]byte("Success\n"))
 	log.Printf("DEL %s\n", key)
+	return []byte("Success"), nil
 }
 
-func (s *Server) handleHas(conn net.Conn, key string) {
+func (s *Server) handleHas(key string) ([]byte, error) {
 	isPresent := s.cache.Has(key)
-	if isPresent {
-		conn.Write([]byte("Yes\n"))
-	} else {
-		conn.Write([]byte("No\n"))
-	}
 	log.Printf("HAS %s %v\n", key, isPresent)
+	if !isPresent {
+		return []byte("No"), nil
+	}
+
+	return []byte("Yes"), nil
 }
