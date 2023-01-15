@@ -3,6 +3,7 @@ package main
 import (
 	"flag"
 	"log"
+	"time"
 
 	"github.com/KavetiRohith/go-cache/cache"
 	"github.com/KavetiRohith/go-cache/server"
@@ -15,7 +16,7 @@ func main() {
 	log.SetFlags(log.Ldate | log.Ltime | log.Llongfile)
 	flag.Parse()
 	opts := server.ServerOpts{
-		Host: *host, Port: *port,
+		Host: *host, Port: *port, CronFrequency: 1 * time.Second,
 	}
 
 	server := server.NewServer(opts, cache.New())

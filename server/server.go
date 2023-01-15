@@ -15,8 +15,10 @@ import (
 )
 
 type ServerOpts struct {
-	Host string
-	Port int
+	Host             string
+	Port             int
+	CronFrequency    time.Duration
+	lastCronExecTime time.Time
 }
 
 type Server struct {
@@ -88,6 +90,11 @@ func (s *Server) Start() error {
 	}
 
 	for {
+		if time.Now().After(s.lastCronExecTime.Add(s.CronFrequency)) {
+			s.cache.DeleteExpiredKeys()
+			s.lastCronExecTime = time.Now()
+		}
+
 		// see if any FD is ready for an IO
 		nevents, e := syscall.EpollWait(epollFD, events, -1)
 		if e != nil {
@@ -198,7 +205,7 @@ func (s *Server) handleSetWithTTL(key string, val string, ttl string) ([]byte, e
 	if err != nil {
 		return nil, errors.New("invalid TTl")
 	}
-	err = s.cache.SetWithTTL(key, val, time.Duration(parsedTTL)*time.Second)
+	err = s.cache.SetWithTTL(key, val, int64(parsedTTL))
 	if err != nil {
 		return nil, err
 	}
