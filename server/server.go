@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/KavetiRohith/go-cache/cache"
+	"github.com/KavetiRohith/go-cache/server/iomultiplexer"
 	syscall "golang.org/x/sys/unix"
 )
 
@@ -37,10 +38,7 @@ func NewServer(opts ServerOpts, c *cache.Cache) *Server {
 func (s *Server) Start() error {
 	log.Println("starting an asynchronous TCP server on", s.Host, s.Port)
 
-	max_clients := 20000
-
-	// Create EPOLL Event Objects to hold events
-	events := make([]syscall.EpollEvent, max_clients)
+	maxClients := 20000
 
 	// Create a socket
 	serverFD, err := syscall.Socket(syscall.AF_INET, syscall.O_NONBLOCK|syscall.SOCK_STREAM, 0)
@@ -50,42 +48,42 @@ func (s *Server) Start() error {
 	defer syscall.Close(serverFD)
 
 	// Set the Socket operate in a non-blocking mode
-	if err = syscall.SetNonblock(serverFD, true); err != nil {
+	err = syscall.SetNonblock(serverFD, true)
+	if err != nil {
 		return err
 	}
 
 	// Bind the IP and the port
 	ip4 := net.ParseIP(s.Host)
-	if err = syscall.Bind(serverFD, &syscall.SockaddrInet4{
+	err = syscall.Bind(serverFD, &syscall.SockaddrInet4{
 		Port: s.Port,
 		Addr: [4]byte{ip4[0], ip4[1], ip4[2], ip4[3]},
-	}); err != nil {
+	})
+	if err != nil {
 		return err
 	}
 
 	// Start listening
-	if err = syscall.Listen(serverFD, max_clients); err != nil {
+	err = syscall.Listen(serverFD, maxClients)
+	if err != nil {
 		return err
 	}
 
 	// AsyncIO starts here!!
 
-	// creating EPOLL instance
-	epollFD, err := syscall.EpollCreate1(0)
+	// creating multiplexer instance
+	multiplexer, err := iomultiplexer.New(maxClients)
 	if err != nil {
 		log.Fatal(err)
 	}
-	defer syscall.Close(epollFD)
-
-	// Specify the events we want to get hints about
-	// and set the socket on which
-	socketServerEvent := syscall.EpollEvent{
-		Events: syscall.EPOLLIN,
-		Fd:     int32(serverFD),
-	}
+	defer multiplexer.Close()
 
 	// Listen to read events on the Server itself
-	if err = syscall.EpollCtl(epollFD, syscall.EPOLL_CTL_ADD, serverFD, &socketServerEvent); err != nil {
+	err = multiplexer.Subscribe(iomultiplexer.Event{
+		Fd: serverFD,
+		Op: iomultiplexer.OP_READ,
+	})
+	if err != nil {
 		return err
 	}
 
@@ -95,15 +93,15 @@ func (s *Server) Start() error {
 			s.lastCronExecTime = time.Now()
 		}
 
-		// see if any FD is ready for an IO
-		nevents, e := syscall.EpollWait(epollFD, events, -1)
-		if e != nil {
+		// poll for events that are ready for IO
+		events, err := multiplexer.Poll(-1)
+		if err != nil {
 			continue
 		}
 
-		for i := 0; i < nevents; i++ {
+		for _, event := range events {
 			// if the socket server itself is ready for an IO
-			if int(events[i].Fd) == serverFD {
+			if event.Fd == serverFD {
 				// accept the incoming connection from a client
 				fd, _, err := syscall.Accept(serverFD)
 				if err != nil {
@@ -116,15 +114,15 @@ func (s *Server) Start() error {
 				syscall.SetNonblock(fd, true)
 
 				// add this new TCP connection to be monitored
-				socketClientEvent := syscall.EpollEvent{
-					Events: syscall.EPOLLIN,
-					Fd:     int32(fd),
+				if err := multiplexer.Subscribe(iomultiplexer.Event{
+					Fd: fd,
+					Op: iomultiplexer.OP_READ,
+				}); err != nil {
+					return err
 				}
-				if err := syscall.EpollCtl(epollFD, syscall.EPOLL_CTL_ADD, fd, &socketClientEvent); err != nil {
-					log.Fatal(err)
-				}
+
 			} else {
-				conn := fDconn{Fd: int(events[i].Fd)}
+				conn := fDconn{Fd: int(event.Fd)}
 
 				r := bufio.NewReader(conn)
 				cmd, err := r.ReadBytes('\n')
